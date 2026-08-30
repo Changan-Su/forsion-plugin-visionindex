@@ -1,0 +1,12 @@
+{
+  "id": "visionindex",
+  "name": { "zh": "视觉索引", "en": "VisionIndex" },
+  "icon": "image",
+  "version": "1.0.0",
+  "layout": {
+    "left": [{ "type": "plugin:visionindex:queue" }],
+    "main": [{ "type": "plugin:visionindex:results" }],
+    "right": [{ "type": "chat" }]
+  },
+  "requires": { "views": ["plugin:visionindex:queue", "plugin:visionindex:results"] }
+}

@@ -1,0 +1,73 @@
+{
+  "id": "visionindex",
+  "name": "视觉索引",
+  "nameEn": "VisionIndex",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "description": "把笔记库里的截图、扫描件、拍照笔记里的字读出来,写成可见目录里的纯 Markdown sidecar(<工作文件夹>/Index/<源图路径>.md),于是宿主全局搜索直接命中图里的文字,并能从命中处一键反查回原图。识别用的是你已经登录的 Forsion 视觉链路(引擎 host 模式的 view_image,模型由引擎自动选,插件不自带任何 OCR 引擎、不接第三方 OCR、不要第二个 key)。数据流向:图片路径与识别出的文字只在你本机与你自己的 Forsion 后端之间流动,产物全部落在你的笔记库里;派生缓存 .visionindex/index.json 只记状态、绝不存正文。范围闸:必须你圈定目录才能开跑,预算闸会先告诉你这次识别几张、大概多久,中途可停,已读完的全部作数。",
+  "descriptionEn": "Reads the text printed inside the screenshots, scans and photo notes in your vault and stores it as plain Markdown sidecars in a visible folder (<workFolder>/Index/<image path>.md), so the host's global search hits words that live inside pictures — and every hit links straight back to the original image. Recognition runs on the Forsion vision pipeline you are already signed in to (the engine's host-mode view_image; the engine picks the model). It ships no OCR engine of its own, calls no third-party OCR API and needs no second API key. Data flow: image paths and extracted text move only between your machine and your own Forsion backend, and every artefact lands in your own vault; the derived cache .visionindex/index.json stores status only, never the text. Scope gate: nothing runs until you tick the folders, the budget gate tells you how many images and roughly how long before you start, and stopping mid-run keeps everything already read.",
+  "main": "main.js",
+  "events": [
+    { "name": "extract", "label": "识别出一张图" },
+    { "name": "scan-done", "label": "一批扫描结束" }
+  ],
+  "onboarding": {
+    "intro": "视觉索引把图片里的字变成可以被搜索到的笔记:圈定一个装图片的目录,看清预算再开跑,每张图读完立刻落一份 sidecar —— 从此全局搜索能搜到截图里的字。",
+    "steps": [
+      {
+        "title": "圈定目录",
+        "description": "命令面板「视觉索引:打开」进「扫描队列」视图,勾选装图片的目录(如 Attachments)。刻意不做开箱扫全库 —— 识别烧的是你自己的额度,得你点头。"
+      },
+      {
+        "title": "看清预算再开跑",
+        "description": "勾选后预算闸会写明「本次将识别 N 张,预估约 X」。单次上限与单张预估耗时在插件设置里改。点「开始识别」串行跑,随时可以「停止」,已经读完的全部保留,下次接着跑。"
+      },
+      {
+        "title": "产物在哪",
+        "description": "每张图一份 sidecar:<工作文件夹>/Index/<源图路径>.md,普通 Markdown,frontmatter 的 source 指回原图,正文开头内嵌 ![[原图]]。这就是全局搜索能搜到它的原因 —— 它是一篇普普通通的笔记。"
+      },
+      {
+        "title": "验证它真的能搜到",
+        "description": "「识别结果」视图里每条都有「验证收录」按钮:拿本条正文里的一小段去问宿主全局搜索,命中就打绿标。这是把「图里的字现在能搜到了」做成可点的证明,不是装饰。"
+      },
+      {
+        "title": "想长期编辑就先转正",
+        "description": "Index/ 下的 sidecar 归机器所有,重扫会整文件覆写。想把某段文字留成自己的笔记,点「转正式笔记」转到 Notes/,转出后这张图永不再被扫描触碰。"
+      },
+      {
+        "title": "支持哪些图",
+        "description": "只收引擎支持的六种位图:png / jpg / jpeg / gif / webp / bmp,单张不超过 5MB。svg / heic / tiff / pdf 一律不入队(PDF 有宿主自己的批注管线)。移动端不支持(依赖桌面端的本机文件工具)。"
+      }
+    ],
+    "en": {
+      "intro": "VisionIndex turns the text inside your pictures into notes you can actually search: tick a folder of images, check the budget, start — every image lands its own sidecar the moment it is read, and global search starts hitting words that live inside screenshots.",
+      "steps": [
+        {
+          "title": "Pick the folders",
+          "description": "Open the Scan Queue view from the command palette (\"VisionIndex: Open\") and tick the folders that hold images (e.g. Attachments). Scanning the whole vault out of the box is deliberately not offered — reading images spends your own quota, so it waits for your nod."
+        },
+        {
+          "title": "Check the budget, then start",
+          "description": "Once folders are ticked the budget gate states \"this run will read N images, about X\". The per-run cap and the per-image estimate live in the plugin settings. Start runs them one at a time; Stop keeps everything already read and the next run picks up where you left off."
+        },
+        {
+          "title": "Where the files go",
+          "description": "One sidecar per image at <workFolder>/Index/<image path>.md — ordinary Markdown whose frontmatter `source` points back at the picture and whose body embeds ![[the image]]. Being an ordinary note is exactly why global search can find it."
+        },
+        {
+          "title": "Prove it is searchable",
+          "description": "Every row in the Results view has a Verify search button: it takes a short phrase from the extracted text, asks the host's global search, and marks the row green on a hit. That is the plugin's whole premise, made clickable."
+        },
+        {
+          "title": "Promote before you edit",
+          "description": "Sidecars under Index/ are owned by the machine and a rescan overwrites them wholesale. To keep a piece of text as your own note, hit Promote to note — it lands in Notes/ and that image is never touched by a scan again."
+        },
+        {
+          "title": "Which images are supported",
+          "description": "Only the six bitmap formats the engine reads: png / jpg / jpeg / gif / webp / bmp, up to 5MB each. svg / heic / tiff / pdf are never queued (PDFs have the host's own annotation pipeline). Mobile is not supported — this relies on the desktop app's local file tools."
+        }
+      ]
+    },
+    "settings": true
+  }
+}
