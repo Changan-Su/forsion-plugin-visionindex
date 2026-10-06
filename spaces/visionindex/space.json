@@ -2,6 +2,7 @@
   "id": "visionindex",
   "name": { "zh": "视觉索引", "en": "VisionIndex" },
   "icon": "image",
+  "iconFile": "icon.png",
   "version": "1.0.0",
   "layout": {
     "left": [{ "type": "plugin:visionindex:queue" }],
