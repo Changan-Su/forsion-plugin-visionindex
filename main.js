@@ -881,31 +881,31 @@ const STYLE = `
 .vi-page{flex:1;min-height:0;overflow:auto;padding:16px 18px 26px;display:flex;flex-direction:column;gap:14px}
 .vi-title{font-size:17px;font-weight:600;color:var(--text)}
 .vi-sub{font-size:12.5px;color:var(--text-muted,#6f6f6f)}
-.vi-card{border:1px solid var(--border,rgba(128,128,128,.34));border-radius:var(--radius-md,12px);background:var(--bg-card,transparent);padding:12px 14px;display:flex;flex-direction:column;gap:8px}
+.vi-card{border:1px solid var(--border,rgba(128,128,128,.34));border-radius:var(--radius-md);background:var(--bg-card,transparent);padding:12px 14px;display:flex;flex-direction:column;gap:8px}
 .vi-card.warn{border-color:var(--accent,#7a6cc4)}
 .vi-sec{font-size:10.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--text-muted,#6f6f6f)}
 .vi-h{font-size:13.5px;font-weight:600;color:var(--text)}
 .vi-p{font-size:12.5px;color:var(--text-muted,#6f6f6f)}
 .vi-strong{color:var(--text);font-weight:600}
 .vi-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.vi-btn{padding:6px 12px;font:inherit;font-size:12.5px;color:var(--text);background:var(--bg-card,transparent);border:1px solid var(--border,rgba(128,128,128,.34));border-radius:var(--radius-sm,9px);cursor:pointer;white-space:nowrap}
+.vi-btn{padding:6px 12px;font:inherit;font-size:12.5px;color:var(--text);background:var(--bg-card,transparent);border:1px solid var(--border,rgba(128,128,128,.34));border-radius:var(--radius-sm);cursor:pointer;white-space:nowrap}
 .vi-btn:hover:not(:disabled){background:var(--accent-light,rgba(128,128,128,.14))}
 .vi-btn:disabled{opacity:.55;cursor:default}
 .vi-btn.primary{color:var(--on-accent);background:var(--accent);border-color:transparent;font-weight:500}
-.vi-btn.sm{padding:3px 9px;font-size:11.5px;border-radius:7px}
-.vi-fold{display:flex;gap:9px;align-items:center;padding:6px 8px;border-radius:9px;cursor:pointer}
+.vi-btn.sm{padding:3px 9px;font-size:11.5px;border-radius:var(--radius-sm)}
+.vi-fold{display:flex;gap:9px;align-items:center;padding:6px 8px;border-radius:var(--radius-sm);cursor:pointer}
 .vi-fold:hover{background:var(--accent-light,rgba(128,128,128,.12))}
 .vi-fold .nm{flex:1;min-width:0;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .vi-fold .st{font-size:11.5px;color:var(--text-muted,#6f6f6f);white-space:nowrap}
-.vi-track{height:5px;border-radius:999px;background:var(--border,rgba(128,128,128,.34));overflow:hidden}
-.vi-fill{height:100%;width:0;border-radius:999px;background:var(--accent,#7a6cc4);transition:width .35s ease-out}
+.vi-track{height:5px;border-radius:var(--radius-pill, 999px);background:var(--border,rgba(128,128,128,.34));overflow:hidden}
+.vi-fill{height:100%;width:0;border-radius:var(--radius-pill, 999px);background:var(--accent,#7a6cc4);transition:width .35s ease-out}
 .vi-log{display:flex;flex-direction:column;gap:2px;max-height:220px;overflow:auto;font-size:12px}
 .vi-logrow{display:flex;gap:8px;align-items:baseline}
 .vi-logrow .p{flex:1;min-width:0;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .vi-logrow .v{color:var(--text-muted,#6f6f6f);white-space:nowrap}
 .vi-logrow.bad .v{color:var(--danger,#b03a2e)}
-.vi-input{width:100%;padding:7px 11px;font:inherit;font-size:12.5px;color:var(--text);background:var(--bg-card,transparent);border:1px solid var(--border,rgba(128,128,128,.34));border-radius:var(--radius-sm,9px);outline:none}
-.vi-item{border:1px solid var(--border,rgba(128,128,128,.34));border-radius:var(--radius-md,12px);padding:10px 12px;display:flex;flex-direction:column;gap:6px;background:var(--bg-card,transparent)}
+.vi-input{width:100%;padding:7px 11px;font:inherit;font-size:12.5px;color:var(--text);background:var(--bg-card,transparent);border:1px solid var(--border,rgba(128,128,128,.34));border-radius:var(--radius-sm);outline:none}
+.vi-item{border:1px solid var(--border,rgba(128,128,128,.34));border-radius:var(--radius-md);padding:10px 12px;display:flex;flex-direction:column;gap:6px;background:var(--bg-card,transparent)}
 .vi-item .path{font-size:12.5px;color:var(--text);word-break:break-all}
 .vi-item .meta{font-size:11.5px;color:var(--text-muted,#6f6f6f)}
 .vi-item .prev{font-size:12px;color:var(--text-muted,#6f6f6f)}
