@@ -5,6 +5,9 @@
  * 视觉链路**(execMode:'host' 的 view_image,视觉能力由引擎 visionService 自动降级,插件永不选模型)
  * 逐张读出文字,写成**可见目录里的纯 md sidecar**(<工作文件夹>/Index/<源路径原样>.md),
  * 于是宿主全局搜索直接命中,并能从命中处 frontmatter 的 source 反查回原图。
+ * ⚠️ 1.1.0 起(宿主有 ctx.storage 时)识别结果改放插件数据文件夹 results/<源路径>.md,不再进库、
+ *    不再被全局搜索命中 —— 这是 2026-11-26 用户定的「插件数据不进笔记库」(方案第 3 件 A)。搜识别文字
+ *    走结果页;要进全局搜索就「转正式笔记」。下面那条「sidecar 必须是普通笔记」红线只对旧宿主(库内 sidecar)成立。
  *
  * 两个视图(Space 组合:左 queue + 主 results + 右宿主 chat):
  *   plugin:visionindex:queue   —— 目录圈定 + 预算闸 + 可中断续跑的扫描队列
@@ -63,6 +66,14 @@ const MSG = {
     runProgress: '{i} / {n}', runCurrent: '正在读:{name}',
     resOk: '{n} 字', resEmpty: '无文字',
     dataAt: '产物写在 {path},普通 markdown,可直接当笔记打开。',
+    dataAtStorage: '识别结果存在 Forsion 的插件数据文件夹里(不在库里,文件树和全局搜索里看不到,在这页搜)。想留在库里的,点「转正式笔记」存到 {path}。',
+    storageWait: '正在等笔记库打开,打开后自动读取识别结果。',
+    dataErrorTitle: '读不出插件数据',
+    dataError: '插件数据文件夹里的识别结果或状态缓存读不出来,已暂停识别,免得用空状态覆盖它:{msg}',
+    dataCorrupt: '插件数据里的 {file} 内容损坏',
+    btnRetry: '重试',
+    actShowText: '展开全文', actHideText: '收起全文',
+    notifyImportSkipped: '库里的旧识别结果有 {n} 个没复制进插件数据(那里已有同名、内容不同的文件,保留了现有的)。库里的原件还在。',
     banEnumTitle: '枚举不到文件', banEnumBody: '当前环境没有给出文件清单(没打开笔记库,或宿主/网页端不支持枚举)。你仍然可以让 Agent 扫一遍库,或手动补录单张。',
     banBridgeTitle: '这个宿主版本没有文件枚举接口', banBridgeBody: '升级 Forsion 桌面端即可自动圈定目录。在此之前,可以手动补录单张图片走同一条识别管线。',
     banVaultTitle: '取不到笔记库的绝对路径', banVaultBody: '不要紧:指令会改发库内相对路径,并让 Agent 用它系统提示里已有的库路径解析。实在不行再去设置里手填。',
@@ -118,6 +129,14 @@ const MSG = {
     runProgress: '{i} / {n}', runCurrent: 'Reading: {name}',
     resOk: '{n} chars', resEmpty: 'no text',
     dataAt: 'Sidecars are written to {path} as ordinary markdown you can open as notes.',
+    dataAtStorage: "Results are kept in Forsion's plugin data folder (not in the vault, so the file tree and global search don't show them; search them on this page). To keep one in the vault, use Promote to note, which saves it to {path}.",
+    storageWait: 'Waiting for the vault to open. Results load once it does.',
+    dataErrorTitle: "Plugin data can't be read",
+    dataError: "Results or the status cache in the plugin data folder can't be read, so reading images is paused to avoid overwriting them: {msg}",
+    dataCorrupt: '{file} in the plugin data folder is damaged',
+    btnRetry: 'Retry',
+    actShowText: 'Show full text', actHideText: 'Hide full text',
+    notifyImportSkipped: "{n} old results in the vault weren't copied into the plugin data folder (files with the same name and different content are already there, and were kept). The originals are still in the vault.",
     banEnumTitle: 'Nothing to enumerate', banEnumBody: 'This environment returned an empty file list (no vault is open, or the host / web build cannot enumerate). You can still let the agent scan the vault, or add a single image by hand.',
     banBridgeTitle: 'This host build has no file-listing API', banBridgeBody: 'Update the Forsion desktop app to pick folders automatically. Until then you can still add single images by hand through the same pipeline.',
     banVaultTitle: 'The absolute vault path is not available', banVaultBody: 'That is fine: the instruction switches to a vault-relative path and lets the agent resolve it against the vault path already in its system prompt. Fill the setting in only if that fails too.',
@@ -581,6 +600,102 @@ function absVaultRoot() {
   return manual ? manual.replace(/[\\/]+$/, '') : ''
 }
 
+// ══ 插件数据文件夹(ctx.storage,宿主 2026-11-26+)═══════════════════════════════════
+// 每张图一份的识别结果和状态缓存都是插件自己的东西,而且只对当前这个库有意义 → `ctx.storage.vault()`:
+//   results/<源路径原样>.md   识别结果(格式同旧 sidecar;花过额度,不放 cache/)
+//   index.json                状态缓存(同旧 .visionindex/index.json)
+// 库里只留你点「转正式笔记」转出的 Notes/。代价:识别结果不再出现在文件树和全局搜索里,搜识别文字改用本插件的结果页。
+// 规矩(别改):
+//   · 没有 ctx.storage(旧宿主、网页)→ 照旧写库里的 Index/ 与 .visionindex/,行为同 1.0.x。
+//   · 有 ctx.storage 但 vault() 为 null(库还在恢复 / 没开库)→ 等,**绝不退回库里写**,否则数据劈成两半。
+//   · 数据层每次用时再取,不缓存(换库后旧的那层会 reject)。
+//   · 读失败(reject)≠ 文件不存在(null):状态缓存读不出来就停用识别并说清楚,绝不当空再写回。
+//   · 库里的旧文件只复制(importFromVault),原件留给你自己删。
+const RESULTS_REL = 'results'
+const INDEX_REL = 'index.json'
+const hasStorage = () => !!(ctx.storage && typeof ctx.storage.vault === 'function')
+/** 新宿主上读写坏了的那一次(读失败 / 复制被拒 / 内容损坏):识别、转笔记一律停,界面上说出来。 */
+let dataError = null
+/** 这次会话里已经复制过旧数据的库(按库路径记;宿主的 vault() 每次都给一个新对象,不能按对象认)。 */
+let importedFor = null
+const libraryKey = () => { try { return (ctx.app && ctx.app.vaultRoot && ctx.app.vaultRoot()) || '' } catch { return '' } }
+function storageWait() { return Object.assign(new Error(t('storageWait')), { code: 'storage-wait' }) }
+/** 当前库的数据层,旧数据已复制(每库每个 id 一次)。旧宿主 → null。库没就绪抛 code 'storage-wait'。 */
+async function dataLayer() {
+  if (!hasStorage()) return null
+  let L = null
+  try { L = ctx.storage.vault() } catch { L = null }
+  if (!L) throw storageWait()
+  const key = `${libraryKey()}\n${wfRoot()}`
+  if (importedFor !== key) {
+    const wf = wfRoot()
+    let skipped = 0
+    try {
+      for (const im of [
+        { id: 'visionindex-results-v1', from: `${wf}/${SIDECAR_DIR}`, to: RESULTS_REL },
+        // 状态缓存按单个文件复制:整目录复制会在同步只送到目录、还没送到文件时就记成「完成」
+        { id: 'visionindex-index-v1', from: `${wf}/${INDEX_DIR}/index.json`, to: INDEX_REL },
+      ]) {
+        const r = await L.importFromVault(im)
+        // missing = 库里本来就没有(没记录,下次再试);skipped = 数据层已有同名不同内容的文件,保留现有的。
+        // 只在真正复制的那一次(complete)提示,每个库各一次
+        if (r && r.status === 'complete' && Array.isArray(r.skipped)) skipped += r.skipped.length
+      }
+    } catch (e) {
+      dataError = String((e && e.message) || e)
+      bus.emit({ type: 'data' })
+      throw e
+    }
+    importedFor = key
+    if (skipped) { say(t('notifyImportSkipped', { n: skipped }), { level: 'warning', sticky: true }) }
+  }
+  return L
+}
+/** 记下一次读失败并停用。返回同一个错误,调用方照抛。 */
+function failData(e) {
+  if (!(e && e.code === 'storage-wait')) { dataError = String((e && e.message) || e); bus.emit({ type: 'data' }) }
+  return e
+}
+/** 识别结果的引用:新宿主上是数据层相对路径 results/<源>.md,旧宿主上是库内 sidecar 路径。非法源 → null。 */
+function resultRef(src) {
+  const sc = sidecarPathFor(src, wfRoot())
+  if (!sc) return null
+  return hasStorage() ? `${RESULTS_REL}/${String(src).replace(/\\/g, '/').trim()}.md` : sc
+}
+async function readResult(ref) {
+  const L = await dataLayer()
+  if (!L) { try { return await ctx.app.readFile(ref) } catch { return null } }
+  try { return await L.readText(ref) } catch (e) { throw failData(e) }
+}
+async function writeResult(ref, text) {
+  const L = await dataLayer()
+  if (!L) return ctx.app.writeFile(ref, text)
+  return L.write(ref, text)
+}
+/** 已有识别结果的源图集合。旧宿主:库里 Index/ 下的 sidecar(listPages);新宿主:数据层 results/ 逐层列。 */
+async function doneSet() {
+  const wf = wfRoot()
+  const L = await dataLayer()
+  if (!L) {
+    const pages = ctx.app && ctx.app.listPages ? await ctx.app.listPages() : []
+    return doneSetOf(pages, wf)
+  }
+  const out = new Set()
+  const walk = async (dir) => {
+    let items = []
+    try { items = await L.list(dir) } catch (e) { throw failData(e) }
+    for (const it of items) {
+      if (it.kind === 'folder') { await walk(it.path); continue }
+      const rel = String(it.path).slice(RESULTS_REL.length + 1)
+      if (!/\.md$/i.test(rel)) continue
+      const src = rel.slice(0, -3)
+      if (src && isIndexableImage(src, wf)) out.add(src)
+    }
+  }
+  await walk(RESULTS_REL)
+  return out
+}
+
 // ══ 派生缓存(只放状态,绝不放正文;任何时候可仅凭 listFiles+listPages 全量重建)══════
 let indexCache = null
 let writeChain = Promise.resolve()
@@ -592,10 +707,23 @@ function enqueueWrite(job) {
 async function readIndex(force) {
   if (indexCache && !force) return indexCache
   let parsed = null
-  try {
-    const raw = ctx.app && ctx.app.readFile ? await ctx.app.readFile(indexPath()) : null
-    parsed = raw ? JSON.parse(raw) : null
-  } catch { parsed = null }
+  const L = await dataLayer()
+  if (L) {
+    // 新宿主:缺文件 = 空;读失败 / 内容坏了 = 停用,绝不当空(下一次 setEntry 会整份写回,把旧状态盖掉)
+    let raw = null
+    try { raw = await L.readText(INDEX_REL) } catch (e) { throw failData(e) }
+    if (raw != null) {
+      try { parsed = JSON.parse(raw) } catch { parsed = null }
+      if (!parsed || typeof parsed !== 'object' || !parsed.entries || typeof parsed.entries !== 'object' || Array.isArray(parsed.entries)) {
+        throw failData(new Error(t('dataCorrupt', { file: INDEX_REL })))
+      }
+    }
+  } else {
+    try {
+      const raw = ctx.app && ctx.app.readFile ? await ctx.app.readFile(indexPath()) : null
+      parsed = raw ? JSON.parse(raw) : null
+    } catch { parsed = null }
+  }
   indexCache = parsed && typeof parsed === 'object' && parsed.entries && typeof parsed.entries === 'object'
     ? { v: 1, builtAt: parsed.builtAt || '', entries: parsed.entries }
     : { v: 1, builtAt: '', entries: {} }
@@ -606,7 +734,7 @@ function setEntry(src, patch) {
     const idx = await readIndex(true)
     idx.entries[src] = { ...(idx.entries[src] || {}), ...patch }
     idx.builtAt = nowIso()
-    await ctx.app.writeFile(indexPath(), JSON.stringify(idx, null, 2))
+    await writeIndexFile(idx)
     indexCache = idx
     return idx
   })
@@ -615,17 +743,22 @@ function setEntry(src, patch) {
  *  ⚠️ 别改回「整份覆写」:这份缓存的正当性只有一条 —— 记住那些「没有产出 sidecar」的图
  *  (empty / failed / skipped / promoted),而这些信息 `listPages()` 里根本不存在。全量覆写会
  *  ① 把已知无文字的图下次重扫全部重烧一遍额度;② 让 promoted 的「永不再被扫描触碰」当场失效。 */
+async function writeIndexFile(idx) {
+  const text = JSON.stringify(idx, null, 2)
+  const L = await dataLayer()
+  if (L) return L.write(INDEX_REL, text)
+  return ctx.app.writeFile(indexPath(), text)
+}
 async function rebuildIndex() {
   const wf = wfRoot()
-  const pages = ctx.app && ctx.app.listPages ? await ctx.app.listPages() : []
-  const done = doneSetOf(pages, wf)
+  const done = await doneSet()
   return enqueueWrite(async () => {
     const prev = (await readIndex(true)).entries || {}
     const entries = {}
     // ① 有 sidecar 的图靠 sidecar 自己说话 —— 但 at/c 从旧账里接着用,否则全掉进「更早」分组
     for (const src of done) {
       const p = prev[src] || {}
-      const e = { fp: fpOf(src), st: 'ok', at: Number(p.at) || 0, sc: sidecarPathFor(src, wf) }
+      const e = { fp: fpOf(src), st: 'ok', at: Number(p.at) || 0, sc: resultRef(src) }
       if (Number(p.c)) e.c = Number(p.c)
       entries[src] = e
     }
@@ -635,7 +768,7 @@ async function rebuildIndex() {
       if (e && typeof e === 'object' && e.st && e.st !== 'ok') entries[k] = e
     }
     const idx = { v: 1, builtAt: nowIso(), entries }
-    await ctx.app.writeFile(indexPath(), JSON.stringify(idx, null, 2))
+    await writeIndexFile(idx)
     indexCache = idx
     return idx
   })
@@ -644,8 +777,7 @@ async function rebuildIndex() {
 // ══ 识别管线 ═════════════════════════════════════════════════════════════════
 /** 落 sidecar。sidecar **整份归机器所有**:重识别 = 整文件覆写(想长期编辑请先「转正式笔记」)。 */
 async function writeSidecar(src, text, meta, truncated) {
-  const wf = wfRoot()
-  const sc = sidecarPathFor(src, wf)
+  const sc = resultRef(src)
   if (!sc) return null
   const fm = {
     visionindex: '1', source: src, fp: fpOf(src),
@@ -655,7 +787,7 @@ async function writeSidecar(src, text, meta, truncated) {
   if (truncated) fm.truncated = '1'
   fm.extractedAt = nowIso()
   const body = `# ${baseNameOf(src)}\n\n![[${src}]]\n\n${String(text || '')}\n`
-  await ctx.app.writeFile(sc, serializeSidecar(fm, body))
+  await writeResult(sc, serializeSidecar(fm, body))
   return sc
 }
 
@@ -682,13 +814,26 @@ async function applyExtraction(src, raw) {
 
 /** 一张图一条命令线:幂等由「sidecar 已存在就跳过」兑现;force = 用户点了「重新识别」,整文件覆写。 */
 async function scanOne(src, signal, force) {
-  const wf = wfRoot()
-  const sc = sidecarPathFor(src, wf)
+  if (dataError) throw Object.assign(new Error(t('dataError', { msg: dataError })), { code: 'data-error' })
+  const sc = resultRef(src)
   if (!sc) return { st: 'failed', e: 'not-found', chars: 0 }
+  if (hasStorage()) {
+    // 花额度之前先确认状态缓存读得出来:读不出来就停在这,别识别完、覆写了结果才发现记不了账
+    await readIndex(true)
+  }
   if (!force) {
-    let existing = null
-    try { existing = await ctx.app.readFile(sc) } catch { existing = null }
+    // 新宿主上读失败直接往上抛(停整批),绝不当「没有结果」再烧一遍额度、更不覆写
+    const existing = await readResult(sc)
     if (existing != null) return { st: 'ok', chars: 0, skipped: true, sc }
+    if (hasStorage()) {
+      // 旧 sidecar 晚于整目录复制才同步到库里:照样认,复制一份进插件数据,不重烧额度
+      let legacy = null
+      try { legacy = await ctx.app.readFile(sidecarPathFor(src, wfRoot())) } catch { legacy = null }
+      if (legacy != null) {
+        await writeResult(sc, legacy)
+        return { st: 'ok', chars: 0, skipped: true, sc }
+      }
+    }
   }
   const cfg = await getCfg()
   // 没登录 = 传输层还没搭起来,**不是这张图的问题**:带 code 抛出去,绝不落成这张图的 failed
@@ -746,9 +891,9 @@ async function refreshPendingCount() {
     if (!roots.length) { run.pending = 0 } else {
       const wf = wfRoot()
       const files = ctx.app && ctx.app.listFiles ? await ctx.app.listFiles() : null
-      const pages = ctx.app && ctx.app.listPages ? await ctx.app.listPages() : []
+      const done = await doneSet()
       const idx = await readIndex(true)
-      run.pending = buildPending(files || [], roots, idx, { workFolder: wf, retryFailed: retryFailed(), done: doneSetOf(pages, wf) }).length
+      run.pending = buildPending(files || [], roots, idx, { workFolder: wf, retryFailed: retryFailed(), done }).length
     }
   } catch { /* 枚举失败:保留上次的数字,别把「问不到」显示成「没有」 */ }
   updateStatus()
@@ -765,7 +910,7 @@ async function checkEngine() {
 
 async function startScan(pending) {
   if (run.active) return
-  const list = (pending || []).slice(0, maxPerRun())
+  let list = (pending || []).slice(0, maxPerRun())
   if (!list.length) return
   // ⚠️ 前置闸必须在 run.active 置位**之前**:未登录时一张都别发,更别把第一张烧成 failed。
   //    (置位之后再 return = run.active 永远卡在 true,界面只剩一个点不动的「停止」。)
@@ -773,6 +918,23 @@ async function startScan(pending) {
     bus.emit({ type: 'engine' })
     say(t('banEngineBody'), { level: 'warning' })
     return
+  }
+  // 插件数据文件夹:先复制旧数据、确认读得出状态缓存;库没就绪 / 读坏了一张都不发
+  let fresh = null
+  if (hasStorage()) try {
+    if (dataError) throw new Error(t('dataError', { msg: dataError }))
+    fresh = await readIndex(true)
+  } catch (e) {
+    say(e && e.code === 'storage-wait' ? t('storageWait') : String((e && e.message) || e), { level: 'warning' })
+    bus.emit({ type: 'data' })
+    return
+  }
+  if (fresh) {
+    // 待识别清单可能是在读失败那会儿算的:按刚读到的状态缓存再筛一遍,已有结论的图不重烧额度
+    const ents = fresh.entries || {}
+    const settled = (e) => e && (e.st === 'ok' || e.st === 'empty' || e.st === 'promoted' || e.st === 'skipped' || (e.st === 'failed' && !retryFailed()))
+    list = list.filter((src) => !settled(ents[src]))
+    if (!list.length) { bus.emit({ type: 'index' }); return }
   }
   const controller = new AbortController()
   Object.assign(run, { active: true, total: list.length, doneCount: 0, current: '', rows: [], controller, ok: 0, empty: 0, fail: 0 })
@@ -856,6 +1018,7 @@ async function agentScanFiles() {
 
 /** 转正式笔记:不带插件 frontmatter,该图此后永不再被扫描触碰(st:'promoted')。 */
 async function promoteToNote(src, body) {
+  if (dataError) throw new Error(t('dataError', { msg: dataError }))
   const wf = wfRoot()
   const base = sanitizeFileName(baseNameOf(src).replace(/\.[^.]+$/, ''))
   const day = dayKeyOf(Date.now())
@@ -875,6 +1038,32 @@ async function promoteToNote(src, body) {
 }
 
 // ══ 视觉层 ═══════════════════════════════════════════════════════════════════
+/** 插件数据文件夹的状态横幅:读坏了(停用,带重试)/ 库还没打开。没事 → null。两个视图共用。 */
+function dataNote(wait) {
+  if (dataError) {
+    const c = el('div', 'vi-card warn')
+    c.appendChild(el('div', 'vi-h', t('dataErrorTitle')))
+    c.appendChild(el('div', 'vi-p', t('dataError', { msg: dataError })))
+    const row = el('div', 'vi-row')
+    row.appendChild(btn(t('btnRetry'), 'sm', () => {
+      dataError = null
+      importedFor = null
+      indexCache = null
+      bus.emit({ type: 'index' })
+      bus.emit({ type: 'data' })
+    }))
+    c.appendChild(row)
+    return c
+  }
+  if (wait) return el('div', 'vi-p', t('storageWait'))
+  return null
+}
+const dataAtText = () => (hasStorage() ? t('dataAtStorage', { path: `${wfRoot()}/${NOTES_DIR}/` }) : t('dataAt', { path: `${wfRoot()}/${SIDECAR_DIR}/` }))
+/** 库还没就绪时过一会儿再试(视图卸载 / 插件停用后不再试)。 */
+function retryLater(fn, alive) {
+  setTimeout(() => { if (!life.signal.aborted && (!alive || alive())) void fn() }, 3000)
+}
+
 const STYLE = `
 .vi-root{height:100%;min-height:0;display:flex;flex-direction:column;color:inherit;background:var(--bg);font-size:13px;line-height:1.55}
 .vi-root *{box-sizing:border-box}
@@ -909,6 +1098,7 @@ const STYLE = `
 .vi-item .path{font-size:12.5px;color:var(--text);word-break:break-all}
 .vi-item .meta{font-size:11.5px;color:var(--text-muted,#6f6f6f)}
 .vi-item .prev{font-size:12px;color:var(--text-muted,#6f6f6f)}
+.vi-full{font-size:12px;white-space:pre-wrap;word-break:break-word;max-height:320px;overflow:auto}
 .vi-grp{font-size:11.5px;font-weight:600;color:var(--text-muted,#6f6f6f);margin-top:4px}
 .vi-list{display:flex;flex-direction:column;gap:8px}
 .vi-ok{color:var(--green,#2e7d4f)}
@@ -1029,6 +1219,8 @@ function mountQueue(host) {
     head.appendChild(el('div', 'vi-title', t('qTitle')))
     head.appendChild(el('div', 'vi-sub', t('qSubtitle')))
     page.appendChild(head)
+    const dn = dataNote(state.wait)
+    if (dn) page.appendChild(dn)
 
     const ban = bannerOf()
     if (ban) {
@@ -1107,12 +1299,12 @@ function mountQueue(host) {
     if (run.active) bRow.appendChild(btn(t('btnStop'), 'primary', () => { if (run.controller) run.controller.abort() }))
     else {
       const start = btn(t('btnStart'), 'primary', () => { void startScan(pending) })
-      start.disabled = !hasRoots || !est.count
+      start.disabled = !hasRoots || !est.count || !!dataError || !!state.wait
       bRow.appendChild(start)
     }
     bRow.appendChild(btn(t('btnOpenResults'), null, () => { if (ctx.openView) ctx.openView('results') }))
     budget.appendChild(bRow)
-    budget.appendChild(el('div', 'vi-p', t('dataAt', { path: `${wfRoot()}/${SIDECAR_DIR}/` })))
+    budget.appendChild(el('div', 'vi-p', dataAtText()))
     page.appendChild(budget)
     if (state.focusBudget) { state.focusBudget = false; if (budget.scrollIntoView) budget.scrollIntoView() }
 
@@ -1142,10 +1334,13 @@ function mountQueue(host) {
       const wf = wfRoot()
       const files = ctx.app && ctx.app.listFiles ? await ctx.app.listFiles() : null
       if (files) state.files = normalizeFileList(files).filter((x) => isIndexableImage(x.path, wf))
-      const pages = ctx.app && ctx.app.listPages ? await ctx.app.listPages() : []
-      state.done = doneSetOf(pages, wf)
+      state.done = await doneSet()
       state.idx = await readIndex(!!force)
-    } catch { /* 枚举失败等同空:降级 UI 已在 banner 里 */ }
+      state.wait = false
+    } catch (e) {
+      // 枚举失败等同空:降级 UI 已在 banner 里;插件数据读坏了由 dataError 横幅说,库没就绪就过一会儿再试
+      if (e && e.code === 'storage-wait') { state.wait = true; retryLater(() => refresh(true), () => renderers.has(render)) }
+    }
     state.loaded = true
     render()
     try { state.engine = await checkEngine() } catch { state.engine = null }
@@ -1159,7 +1354,7 @@ function mountQueue(host) {
     if (e.type === 'engine') { state.engine = engineOk; render(); return }
     // 运行中的进度 tick:只重画运行区(整页重建会吃掉用户正在点的复选框)
     if (e.type === 'run' && runHost && paintedActive === run.active) { paintRun(); return }
-    if (e.type === 'run' || e.type === 'index') render()
+    if (e.type === 'run' || e.type === 'index' || e.type === 'data') render()
   })
   const offFocus = focusBus.on(() => { state.focusBudget = true; render() })
   return () => { renderers.delete(render); offBus(); offFocus() }
@@ -1174,19 +1369,30 @@ function mountResults(host) {
   const root = el('div', 'vi-root')
   host.appendChild(root)
 
-  const state = { rows: [], query: '', hits: null, bodies: new Map(), verified: new Map(), fallback: false }
+  const state = { rows: [], query: '', hits: null, bodies: new Map(), verified: new Map(), fallback: false, expanded: new Set(), wait: false }
 
   async function load() {
-    const wf = wfRoot()
-    let pages = []
-    try { pages = ctx.app && ctx.app.listPages ? await ctx.app.listPages() : [] } catch { pages = [] }
-    const idx = await readIndex(true)
+    let done = new Set()
+    let idx = { entries: {} }
+    try {
+      try { done = await doneSet() } catch (e) { if (hasStorage()) throw e; done = new Set() }
+      idx = await readIndex(true)
+      state.wait = false
+    } catch (e) {
+      // 新宿主上读不出来:不画半份列表,横幅说原因;库没就绪就过一会儿再试
+      state.rows = []
+      if (e && e.code === 'storage-wait') { state.wait = true; retryLater(load, () => renderers.has(render)) }
+      render()
+      return
+    }
     const seen = new Map()
-    for (const src of doneSetOf(pages, wf)) seen.set(src, { src, sc: sidecarPathFor(src, wf), at: 0 })
+    // 旧宿主上 index 里的 sc 是库内 sidecar 路径;新宿主一律按源路径重算(老条目记的是库内路径)
+    const refOf = (src, e) => (hasStorage() ? resultRef(src) : (e && e.sc) || resultRef(src))
+    for (const src of done) seen.set(src, { src, sc: refOf(src), at: 0 })
     for (const src of Object.keys(idx.entries || {})) {
       const e = idx.entries[src]
       if (!e || e.st !== 'ok') continue
-      const cur = seen.get(src) || { src, sc: e.sc || sidecarPathFor(src, wf), at: 0 }
+      const cur = seen.get(src) || { src, sc: refOf(src, e), at: 0 }
       cur.at = Number(e.at) || cur.at
       cur.chars = Number(e.c) || 0
       seen.set(src, cur)
@@ -1207,8 +1413,8 @@ function mountResults(host) {
     if (!r || !r.sc) return ''
     if (!state.bodies.has(r.src)) {
       let text = null
-      try { text = await ctx.app.readFile(r.sc) } catch { text = null }
-      if (text == null) return '' // 读不到就别缓存空串,下次还能再试
+      try { text = await readResult(r.sc) } catch { text = null }
+      if (text == null) return '' // 读不到就别缓存空串,下次还能再试(新宿主上的读失败已进 dataError 横幅)
       state.bodies.set(r.src, parseSidecar(text).body)
     }
     return state.bodies.get(r.src) || ''
@@ -1220,6 +1426,17 @@ function mountResults(host) {
     if (!q.trim()) { state.hits = null; state.fallback = false; render(); return }
     const wf = wfRoot()
     let hits = null
+    if (hasStorage()) {
+      // 识别结果不在库里了,全局搜索搜不到:把全部结果读进来,在这里逐条匹配(完整,不是兜底)
+      for (const r of state.rows) await ensureBody(r)
+      // 有条目读不出来:别把「没搜到」当结果给出去,横幅说原因
+      if (dataError) { state.hits = null; render(); return }
+      const low = q.toLowerCase()
+      state.fallback = false
+      state.hits = new Set(state.rows.filter((r) => r.src.toLowerCase().includes(low) || bodyOf(r).toLowerCase().includes(low)).map((r) => r.src))
+      render()
+      return
+    }
     if (ctx.app && ctx.app.searchVault) {
       try {
         const raw = await ctx.app.searchVault(q)
@@ -1272,6 +1489,10 @@ function mountResults(host) {
     search.addEventListener('keydown', (ev) => { if (ev && ev.key === 'Enter') void doSearch(search.value) })
     search.addEventListener('change', () => { void doSearch(search.value) })
     page.appendChild(search)
+    const dn = dataNote(state.wait)
+    if (dn) { page.appendChild(dn); if (!state.rows.length) return }
+    // 识别结果不在库里时说一句在哪、为什么全局搜索搜不到(空态那张卡自己会说)
+    if (hasStorage() && state.rows.length) page.appendChild(el('div', 'vi-p', dataAtText()))
 
     if (!state.rows.length) {
       const empty = el('div', 'vi-card')
@@ -1281,7 +1502,7 @@ function mountResults(host) {
       row.appendChild(btn(t('rGoScan'), 'primary', () => { if (ctx.openView) ctx.openView('queue') }))
       empty.appendChild(row)
       page.appendChild(empty)
-      page.appendChild(el('div', 'vi-p', t('dataAt', { path: `${wfRoot()}/${SIDECAR_DIR}/` })))
+      page.appendChild(el('div', 'vi-p', dataAtText()))
       return
     }
 
@@ -1300,9 +1521,17 @@ function mountResults(host) {
       const meta = el('div', 'meta' + (v === 'ok' ? ' vi-ok' : ''), metaText)
       item.appendChild(meta)
       const prev = previewOf(bodyOf(r).replace(/^#[^\n]*\n/, '').replace(/!\[\[[^\]]*\]\]/g, ''), PREVIEW_CHARS)
-      if (prev) item.appendChild(el('div', 'prev', prev))
+      const open = state.expanded.has(r.src)
+      if (open) item.appendChild(el('div', 'vi-full', bodyOf(r).replace(/^#[^\n]*\n/, '').replace(/!\[\[[^\]]*\]\]/g, '').trim()))
+      else if (prev) item.appendChild(el('div', 'prev', prev))
       const acts = el('div', 'vi-row')
-      acts.appendChild(btn(t('actOpenText'), 'sm', () => { if (ctx.app && ctx.app.openFile && r.sc) ctx.app.openFile(r.sc) }))
+      // 新宿主上识别结果不在库里,没有文件可开:就地展开全文;想留在库里就「转正式笔记」
+      if (hasStorage()) {
+        acts.appendChild(btn(open ? t('actHideText') : t('actShowText'), 'sm', async () => {
+          if (open) state.expanded.delete(r.src); else { await ensureBody(r); state.expanded.add(r.src) }
+          render()
+        }))
+      } else acts.appendChild(btn(t('actOpenText'), 'sm', () => { if (ctx.app && ctx.app.openFile && r.sc) ctx.app.openFile(r.sc) }))
       acts.appendChild(btn(t('actOpenSource'), 'sm', () => { if (ctx.app && ctx.app.openFile) ctx.app.openFile(r.src) }))
       acts.appendChild(btn(t('actPromote'), 'sm', async () => {
         // 空正文绝不转出:转出的是用户以为自己留住的那段字,而 promoteToNote 会把这张图记成
@@ -1322,7 +1551,8 @@ function mountResults(host) {
           void load()
         } catch (e) { say(String((e && e.message) || e), { level: 'error' }) }
       }))
-      acts.appendChild(btn(t('actVerify'), 'sm', () => { void verify(r) }))
+      // 「验证收录」验的是全局搜索能不能命中库里的 sidecar;新宿主上结果不在库里,这一步没有意义
+      if (!hasStorage()) acts.appendChild(btn(t('actVerify'), 'sm', () => { void verify(r) }))
       item.appendChild(acts)
       list.appendChild(item)
     }
@@ -1332,7 +1562,7 @@ function mountResults(host) {
   render()
   void load()
   renderers.add(render)
-  const offBus = bus.on((e) => { if (e.type === 'index') void load() })
+  const offBus = bus.on((e) => { if (e.type === 'index') void load(); else if (e.type === 'data') render() })
   return () => { renderers.delete(render); offBus() }
 }
 
@@ -1394,6 +1624,7 @@ if (globalThis.__VISIONINDEX_TEST__) {
     estimateBudget, fmtDuration, groupLabelOf, serializeSidecar, parseSidecar, takeFence,
     buildPending, rootOf, doneSetOf, decodeSseLine, previewOf, sanitizeFileName,
     dayKeyOf, daySerialOf, countChars, readIndex, setEntry, rebuildIndex, applyExtraction,
+    doneSet, resultRef, readResult, dataLayer, startScan, getDataError: () => dataError,
     scanOne, promoteToNote, startScan, setRunner, absVaultRoot, wfRoot, life, run, bus,
     runAgent, getCfg, uuid, writeSidecar, indexPath, classifyError, refreshPendingCount,
   })

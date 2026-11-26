@@ -875,6 +875,176 @@ V.set('视觉索引/Index/Attachments/a.png.md', T.serializeSidecar(
   d4()
 }
 
+// ══ ㉕ 插件数据文件夹(ctx.storage,1.1.0):识别结果与状态缓存搬出库 ══════════════════
+{
+  function mkStorage(vmap, o) {
+    const opt = o || {}
+    const files = new Map()
+    const imports = []
+    const done = new Set()
+    const layer = {
+      files, imports,
+      readText: async (p) => { if (opt.rejectRead && opt.rejectRead(p)) throw new Error('EIO ' + p); return files.has(p) ? files.get(p) : null },
+      write: async (p, d) => { files.set(p, String(d)) },
+      list: async (dir) => {
+        const pre = dir ? dir + '/' : ''
+        const kids = new Map()
+        for (const k of files.keys()) {
+          if (!k.startsWith(pre)) continue
+          const rest = k.slice(pre.length)
+          const head = rest.split('/')[0]
+          kids.set(head, rest.includes('/') ? 'folder' : 'file')
+        }
+        return [...kids.entries()].sort().map(([name, kind]) => ({ name, path: pre + name, kind, size: 0, mtime: 0 }))
+      },
+      importFromVault: async ({ id, from, to }) => {
+        imports.push({ id, from, to })
+        if (opt.rejectImport) throw new Error('Unrecognised import record')
+        if (done.has(id)) return { status: 'already-done', copied: 0, skipped: [] }
+        const single = vmap.has(from)
+        const src = single ? [from] : [...vmap.keys()].filter((k) => k.startsWith(from + '/'))
+        if (!src.length) return { status: 'missing', copied: 0, skipped: [] }
+        done.add(id)
+        const skipped = []
+        for (const k of src) {
+          const dest = single ? to : [to, k.slice(from.length + 1)].filter(Boolean).join('/')
+          if (files.has(dest) && files.get(dest) !== vmap.get(k)) { skipped.push(dest); continue }
+          files.set(dest, vmap.get(k))
+        }
+        return { status: 'complete', copied: src.length - skipped.length, skipped }
+      },
+    }
+    // 宿主的 vault() 每次都返回一个新对象:照样包一层
+    return { layer, storage: { vault: () => (opt.vaultNull && opt.vaultNull() ? null : { ...layer }) } }
+  }
+  async function bootStored(o) {
+    const vmap = new Map(Object.entries(o.vaultFiles || {}))
+    const vw = []
+    const ns = []
+    const r2 = { views: [] }
+    const st = mkStorage(vmap, o.storage)
+    const c = {
+      ...ctx, storage: st.storage, notify: (m, x) => ns.push([m, x]),
+      registerView: (v) => r2.views.push(v), registerCommand() {}, registerSetting() {},
+      registerStatusItem: () => ({ update() {}, dispose() {} }), registerSlashItem() {}, registerFileType() {}, registerFileCreator() {},
+      activity: { log() {} }, achievements: { registerSeries() {}, track() {} },
+      app: {
+        ...ctx.app,
+        readFile: async (p) => (vmap.has(p) ? vmap.get(p) : null),
+        writeFile: async (p, text) => { vmap.set(p, String(text)); vw.push(p) },
+        listFiles: async () => o.images || [],
+        listPages: async () => [...vmap.keys()].filter((k) => k.endsWith('.md')),
+      },
+    }
+    globalThis.__VISIONINDEX_TEST__ = {}
+    const d = new Function('ctx', src)(c)
+    const T2 = globalThis.__VISIONINDEX_TEST__
+    return { T2, d, vmap, vw, ns, st, r2 }
+  }
+  const mount = async (e, id) => { const host = mkEl('div'); const off = e.r2.views.find((v) => v.id === id).mount(host); await sleep(60); return { host, off } }
+  const OLD_SC = '视觉索引/Index/Attachments/old.png.md'
+  const oldIdx = JSON.stringify({ v: 1, builtAt: '', entries: { 'Attachments/old.png': { fp: 'x', st: 'ok', c: 4, at: 5, sc: OLD_SC }, 'Attachments/blank.png': { st: 'empty', at: 5 } } })
+  const okText = FENCE('{"lang":"zh","kind":"screenshot","confidence":"high"}', '白板上写着季度目标')
+
+  // ① 旧数据复制进来;结果、状态缓存都在插件数据,库里原件一个不删;新识别不再写库里的 Index/ 与 .visionindex/
+  {
+    const e = await bootStored({
+      vaultFiles: { [OLD_SC]: '---\nvisionindex: 1\nsource: Attachments/old.png\n---\n# old.png\n\n![[Attachments/old.png]]\n\n旧的识别文字\n', '视觉索引/.visionindex/index.json': oldIdx },
+      images: ['Attachments/old.png', 'Attachments/new.png'],
+    })
+    const idx = await e.T2.readIndex(true)
+    A.deepEqual(e.st.layer.imports.map((x) => [x.id, x.from, x.to]), [['visionindex-results-v1', '视觉索引/Index', 'results'], ['visionindex-index-v1', '视觉索引/.visionindex/index.json', 'index.json']], '两次复制,id 固定')
+    A.equal(idx.entries['Attachments/blank.png'].st, 'empty', '状态缓存从插件数据读回(非 ok 状态保住了)')
+    A.ok(e.st.layer.files.has('results/Attachments/old.png.md'), '旧 sidecar 复制到 results/')
+    A.deepEqual([...await e.T2.doneSet()], ['Attachments/old.png'], '已识别集合来自插件数据,不再来自 listPages')
+    A.ok(e.vmap.has(OLD_SC) && e.vmap.has('视觉索引/.visionindex/index.json'), '库里原件不许删')
+    e.T2.setRunner(async () => okText)
+    const r = await e.T2.scanOne('Attachments/new.png', null, false)
+    A.equal(r.st, 'ok')
+    A.equal(r.sc, 'results/Attachments/new.png.md')
+    A.ok(String(e.st.layer.files.get('results/Attachments/new.png.md')).includes('白板上写着季度目标'), '新结果写进插件数据')
+    A.equal(JSON.parse(e.st.layer.files.get('index.json')).entries['Attachments/new.png'].st, 'ok')
+    A.ok(!e.vw.some((p) => p.includes('/Index/') || p.includes('/.visionindex/')), `库里不再写 Index/、.visionindex/,实写 ${e.vw.join(',')}`)
+    const again = await e.T2.scanOne('Attachments/old.png', null, false)
+    A.ok(again.skipped, '已有结果(复制来的)不重烧额度')
+    A.equal(e.st.layer.imports.length, 2, '同一个库只复制一次(宿主 vault() 每次给新对象,不能按对象认)')
+    // 结果页:本页搜索读插件数据里的全文;没有「打开文本」「验证收录」,改成就地展开
+    const { host, off } = await mount(e, 'results')
+    A.ok(host.textContent.includes('Attachments/new.png') && host.textContent.includes('Attachments/old.png'), '结果页列出两条')
+    A.ok(findAll(host, (n) => n.tagName === 'BUTTON' || n.tag === 'button').some((b) => b.textContent === '展开全文'), '有「展开全文」')
+    A.ok(!findAll(host, (n) => n.tagName === 'BUTTON' || n.tag === 'button').some((b) => b.textContent === '验证收录' || b.textContent === '打开文本'), '新宿主上不画「验证收录」「打开文本」')
+    A.ok(host.textContent.includes('插件数据文件夹'), '空态 / 说明里讲清结果在哪')
+    off(); e.d()
+  }
+  // ①b 复制之后才同步到的旧 sidecar 照样认(不重烧额度);待识别清单按新读到的状态缓存再筛;entries 是数组 = 损坏
+  {
+    let calls = 0
+    const e = await bootStored({ images: ['Attachments/late.png', 'Attachments/blank.png'] })
+    e.T2.setRunner(async () => { calls++; return okText })
+    await e.T2.readIndex(true)
+    e.vmap.set('视觉索引/Index/Attachments/late.png.md', '---\nvisionindex: 1\n---\n晚到\n')
+    const r = await e.T2.scanOne('Attachments/late.png', null, false)
+    A.ok(r.skipped && calls === 0, '晚到的旧 sidecar → 不发')
+    A.ok(String(e.st.layer.files.get('results/Attachments/late.png.md')).includes('晚到'), '复制一份进插件数据')
+    e.st.layer.files.set('index.json', JSON.stringify({ v: 1, entries: { 'Attachments/blank.png': { st: 'empty', at: 1 } } }))
+    await e.T2.startScan(['Attachments/blank.png'])
+    A.equal(calls, 0, '状态缓存里已判空的图不重烧')
+    e.st.layer.files.set('index.json', '{"v":1,"entries":[]}')
+    await A.rejects(e.T2.readIndex(true), '数组形的 entries = 损坏')
+    e.d()
+  }
+  // ② 库没就绪:一张都不发、不往库里退;结果页说在等
+  {
+    let calls = 0
+    const e = await bootStored({ storage: { vaultNull: () => true }, images: ['Attachments/a.png'] })
+    e.T2.setRunner(async () => { calls++; return okText })
+    await A.rejects(e.T2.readIndex(true), (err) => err.code === 'storage-wait')
+    await e.T2.startScan(['Attachments/a.png'])
+    A.equal(calls, 0, '库没就绪时一张都不发')
+    A.equal(e.vw.length, 0, '也不往库里写')
+    const { host, off } = await mount(e, 'results')
+    A.ok(host.textContent.includes('正在等笔记库打开'), '结果页说在等')
+    off(); e.d()
+  }
+  // ③ 状态缓存读失败:停用识别,横幅 + 重试;缓存原样不动
+  {
+    let calls = 0
+    const e = await bootStored({ storage: { rejectRead: (p) => p === 'index.json' }, images: ['Attachments/a.png'] })
+    e.st.layer.files.set('index.json', oldIdx)
+    e.T2.setRunner(async () => { calls++; return okText })
+    await A.rejects(e.T2.readIndex(true))
+    A.ok(e.T2.getDataError(), '读失败记进 dataError')
+    await e.T2.startScan(['Attachments/a.png'])
+    A.equal(calls, 0, '读失败时一张都不发')
+    await A.rejects(e.T2.setEntry('Attachments/a.png', { st: 'failed' }))
+    A.equal(e.st.layer.files.get('index.json'), oldIdx, '状态缓存原样不动,绝不拿空缓存写回')
+    const { host, off } = await mount(e, 'queue')
+    A.ok(host.textContent.includes('读不出插件数据'), '横幅说出来')
+    A.ok(findAll(host, (n) => n.tagName === 'BUTTON' || n.tag === 'button').some((b) => b.textContent === '重试'), '带重试')
+    off(); e.d()
+  }
+  // ④ 损坏的状态缓存 → 停用,不当空;⑤ 复制被拒 → 停用
+  {
+    const e = await bootStored({})
+    e.st.layer.files.set('index.json', '{oops')
+    await A.rejects(e.T2.readIndex(true))
+    A.ok(e.T2.getDataError(), '损坏 = 停用')
+    e.d()
+    const r = await bootStored({ vaultFiles: { [OLD_SC]: 'x' }, storage: { rejectImport: true } })
+    await A.rejects(r.T2.readIndex(true))
+    A.ok(r.T2.getDataError() && r.T2.getDataError().includes('Unrecognised'), '复制被拒 = 停用并带原因')
+    r.d()
+  }
+  // ⑥ 跳过的个数告诉用户
+  {
+    const e = await bootStored({ vaultFiles: { [OLD_SC]: 'a' } })
+    e.st.layer.files.set('results/Attachments/old.png.md', 'b')
+    await e.T2.readIndex(true)
+    A.ok(e.ns.some(([m]) => String(m).includes('1 个没复制')), '跳过要提示')
+    e.d()
+  }
+}
+
 // ══ 四时区扫描(含日期算术的 check 自钉 TZ 后逐个跑)═══════════════════════
 if (!process.env.VI_TZ) {
   const self = fileURLToPath(import.meta.url)
